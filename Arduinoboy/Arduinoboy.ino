@@ -183,6 +183,7 @@ HardwareSerial *serial = &Serial1;
 ***************************************************************************/
 #elif defined (PRO_MICRO)
 #define HAS_USB_MIDI
+#define USE_LEONARDO
 #include <USB-MIDI.h>
 
 #define GB_SET(bit_cl, bit_out, bit_in) PORTF = (PINF & B00011111) | ((bit_cl<<7) | ((bit_out)<<6) | ((bit_in)<<5))
