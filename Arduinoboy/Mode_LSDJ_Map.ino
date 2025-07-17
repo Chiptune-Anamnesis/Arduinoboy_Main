@@ -1,191 +1,150 @@
-/**************************************************************************
- * Name:    Timothy Lamb                                                  *
- * Email:   trash80@gmail.com                                             *
- ***************************************************************************/
-/***************************************************************************
- *                                                                         *
- *   This program is free software; you can redistribute it and/or modify  *
- *   it under the terms of the GNU General Public License as published by  *
- *   the Free Software Foundation; either version 2 of the License, or     *
- *   (at your option) any later version.                                   *
- *                                                                         *
- ***************************************************************************/
+// ————— map mode (LSDJ LiveMap) —————
 
-#include <Arduino.h>
-#include <MIDI.h>       // or whatever MIDI library you’re using
-#include <MIDI_USB.h>   // for uMIDI
-#include <MIDI_Serial.h>// for sMIDI
+#include <MIDI.h>  // assumes YOU’VE already done USING_NAMESPACE_MIDI and MIDI_CREATE_INSTANCE in your main
 
-// pins, state vars, etc.
-extern uint8_t pinStatusLed, pinGBClock;
-extern int blinkMaxCount;
+// Forward declarations from main:
+extern int  memory[];
 extern bool sequencerStarted;
-extern int mapQueueWaitSerial, mapQueueWaitUsb;
-extern int mapCurrentRow, mapQueueMessage;
+extern void sequencerStart();
+extern void sequencerStop();
+extern void sendByteToGameboy(uint8_t b);
+extern void updateVisualSync();
+extern void setMode();
+extern void updateStatusLight();
+extern void updateBlinkLights();
+
+extern uint8_t mapQueueWaitSerial;
+extern uint8_t mapQueueWaitUsb;
+extern int     mapCurrentRow;
+extern int     mapQueueMessage;
 extern unsigned long mapQueueTime;
-extern uint8_t memory[];
-void sequencerStart();
-void sequencerStop();
-void sendByteToGameboy(uint8_t);
-void updateVisualSync();
-void setMode();
-void updateStatusLight();
-void updateBlinkLights();
 
-// MIDI interfaces
-MIDI_NAMESPACE::MidiUSB   uMIDI;  // HAS_USB_MIDI
-MIDI_NAMESPACE::MidiSerial sMIDI; // HAS_SERIAL_MIDI
+// MIDI objects from main:
+extern __umt usbMIDI_t;  // usb transport
+extern __ss  uMIDI;      // USB‑MIDI interface
+extern MidiInterface<HardwareSerial> sMIDI; // Serial‑MIDI interface
 
+// single entrypoint for ALL LSDJ Map messages:
 void handleLsdjMapMessage(byte type, byte channel, byte data1);
 
+// call this instead of loop‑style code in main:
 void modeLSDJMapSetup()
 {
-  digitalWrite(pinStatusLed, LOW);
-  pinMode(pinGBClock, OUTPUT);
-  digitalWrite(pinGBClock, HIGH);
-
-  // register for Real‑Time messages
-#ifdef HAS_USB_MIDI
+  // register real‑time (clock/start/stop) callbacks
   uMIDI.setHandleRealTimeSystem(handleLsdjMapMessage);
-#endif
-#ifdef HAS_SERIAL_MIDI
   sMIDI.setHandleRealTimeSystem(handleLsdjMapMessage);
-#endif
 
-  blinkMaxCount = 1000;
+  // blink LED to show we’re in Map mode, then enter main loop
   modeLSDJMap();
 }
 
 void modeLSDJMap()
 {
   while (1) {
-    modeLSDJMapUsbMidiReceive();
-    checkMapQueue();
-
-    // if no serial MIDI message pending, do UI stuff
-    if (!modeLSDJMapSerialMidiReceive()) {
-      setMode();
-      updateStatusLight();
-      checkMapQueue();
-      updateBlinkLights();
+    // 1) drain USB‑MIDI
+    while (uMIDI.read()) {
+      byte type    = uMIDI.getType();
+      byte channel = uMIDI.getChannel() - 1;
+      byte data1   = uMIDI.getData1();
+      if (channel == memory[MEM_LIVEMAP_CH] ||
+         (channel == memory[MEM_LIVEMAP_CH] + 1)) {
+        handleLsdjMapMessage(type, channel, data1);
+      }
     }
-  }
-}
 
-void setMapByte(uint8_t b, boolean usb)
-{
-    uint8_t wait = usb ? mapQueueWaitUsb : mapQueueWaitSerial;
-
-    switch (b) {
-      case midi::SystemReset:   // 0xFF
-        setMapQueueMessage(0xFF, wait);
-        break;
-      case midi::ActiveSensing: // 0xFE
-        if (!sequencerStarted) {
-          sendByteToGameboy(0xFE);
-        } else if (mapCurrentRow >= 0) {
-          setMapQueueMessage(mapCurrentRow, wait);
-        }
-        break;
-      default:
-        mapCurrentRow = b;
-        sendByteToGameboy(b);
-        resetMapCue();
+    // 2) drain Serial‑MIDI
+    if (sMIDI.read()) {
+      byte type    = sMIDI.getType();
+      byte channel = sMIDI.getChannel() - 1;
+      byte data1   = sMIDI.getData1();
+      if (channel == memory[MEM_LIVEMAP_CH] ||
+         (channel == memory[MEM_LIVEMAP_CH] + 1)) {
+        handleLsdjMapMessage(type, channel, data1);
+      }
     }
-}
 
-void setMapQueueMessage(uint8_t m, uint8_t wait)
-{
-    if (mapQueueMessage == -1 || mapQueueMessage == 0xFF) {
-        mapQueueTime    = millis() + wait;
-        mapQueueMessage = m;
-    }
-}
-
-void resetMapCue()
-{
-    mapQueueMessage = -1;
-}
-
-void checkMapQueue()
-{
-  if (mapQueueMessage >= 0 && millis() > mapQueueTime) {
+    // 3) UI and visuals when no new MIDI
+    setMode();
+    updateStatusLight();
+    // allow any queued map‑bytes to fire:
+    if (mapQueueMessage >= 0 && millis() > mapQueueTime) {
       if (mapQueueMessage == 0xFF) {
-          sendByteToGameboy(0xFF);
+        sendByteToGameboy(0xFF);
       } else {
-          if (mapQueueMessage == 0xFE || mapCurrentRow == mapQueueMessage) {
-              mapCurrentRow = -1;
-              sendByteToGameboy(0xFE);
-          }
+        if (mapQueueMessage == 0xFE ||
+            mapCurrentRow == mapQueueMessage) {
+          mapCurrentRow = -1;
+          sendByteToGameboy(0xFE);
+        }
       }
       mapQueueMessage = -1;
       updateVisualSync();
-  }
-}
-
-void modeLSDJMapUsbMidiReceive() {
-#ifdef HAS_USB_MIDI
-  while (uMIDI.read()) {
-    byte type    = uMIDI.getType();
-    byte channel = uMIDI.getChannel() - 1;
-    byte data1   = uMIDI.getData1();
-
-    if (channel != memory[MEM_LIVEMAP_CH]
-     && channel != (memory[MEM_LIVEMAP_CH] + 1)) {
-      continue;
     }
-
-    handleLsdjMapMessage(type, channel, data1);
+    updateBlinkLights();
   }
-#endif
 }
 
-bool modeLSDJMapSerialMidiReceive() {
-#ifdef HAS_SERIAL_MIDI
-  if (!sMIDI.read()) return false;
+void setMapByte(uint8_t b, bool usb)
+{
+  uint8_t wait = usb ? mapQueueWaitUsb : mapQueueWaitSerial;
+  switch (b) {
+    case 0xFF:  // SystemReset / clock‑pulse placeholder
+      if (mapQueueMessage < 0 || mapQueueMessage == 0xFF) {
+        mapQueueTime    = millis() + wait;
+        mapQueueMessage = 0xFF;
+      }
+      break;
 
-  byte type    = sMIDI.getType();
-  byte channel = sMIDI.getChannel() - 1;
-  byte data1   = sMIDI.getData1();
+    case 0xFE:  // ActiveSensing placeholder → “stop row”
+      if (!sequencerStarted) {
+        sendByteToGameboy(0xFE);
+      } else if (mapCurrentRow >= 0) {
+        if (mapQueueMessage < 0 || mapQueueMessage == 0xFF) {
+          mapQueueTime    = millis() + wait;
+          mapQueueMessage = mapCurrentRow;
+        }
+      }
+      break;
 
-  if (channel != memory[MEM_LIVEMAP_CH]
-   && channel != (memory[MEM_LIVEMAP_CH] + 1)) {
-    return true;  // we consumed it, but do nothing
+    default:
+      // immediate row trigger
+      mapCurrentRow = b;
+      sendByteToGameboy(b);
+      mapQueueMessage = -1;
+      break;
   }
-
-  handleLsdjMapMessage(type, channel, data1);
-  checkMapQueue();
-  return true;
-#else
-  return false;
-#endif
 }
 
-void handleLsdjMapMessage(byte type, byte channel, byte data1) {
+void handleLsdjMapMessage(byte type, byte channel, byte data1)
+{
   switch (type) {
-    // === IMMEDIATE CLOCK SYNC ===
+    // ——— CLOCK ———
     case midi::Clock:
+      // immediate 0xFF for every tick
       sendByteToGameboy(0xFF);
       updateVisualSync();
       break;
 
-    // === TRANSPORT ===
+    // ——— TRANSPORT ———
     case midi::Start:
     case midi::Continue:
-      resetMapCue();
       sequencerStart();
       break;
+
     case midi::Stop:
       sequencerStop();
+      // “stop row” on next queue if needed:
       setMapByte(0xFE, true);
       break;
 
-    // === NOTE MAPPING ===
+    // ——— NOTES = map‑rows ———
     case midi::NoteOff:
       setMapByte(0xFE, true);
       break;
+
     case midi::NoteOn:
-      if (channel == (memory[MEM_LIVEMAP_CH] + 1)) {
+      // upper channel offsets by +128
+      if (channel == memory[MEM_LIVEMAP_CH] + 1) {
         setMapByte(128 + data1, true);
       } else {
         setMapByte(data1, true);
@@ -193,7 +152,7 @@ void handleLsdjMapMessage(byte type, byte channel, byte data1) {
       break;
 
     default:
-      // ignore all other messages
+      // ignore CC, etc.
       break;
   }
 }
