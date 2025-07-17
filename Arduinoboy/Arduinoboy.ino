@@ -12,7 +12,7 @@
  *                                                                         *
  * Version: 1.3.5                                                          *
  * Date:    July 17 2025                                                   *
- * Original Creator:    crunchypotato                                      *
+ * Name:    tstirrat / crunchypotato                                       *
  * Original Creator:    Timothy Lamb                                       *
  * Email:   trash80@gmail.com                                              *
  *                                                                         *
