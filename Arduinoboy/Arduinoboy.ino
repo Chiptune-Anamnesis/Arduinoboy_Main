@@ -105,7 +105,7 @@
 #define MEM_MIDIOUT_BIT_DELAY 61
 #define MEM_MIDIOUT_BYTE_DELAY 63
 
-// #define PRO_MICRO // define this for Pro Micro custom Arduino (not detectable from regular defines)
+#define PRO_MICRO // define this for Pro Micro custom Arduino (not detectable from regular defines)
 
 /***************************************************************************
 * User Settings
